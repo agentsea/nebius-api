@@ -1,7 +1,104 @@
 # Nebius AI Cloud API <br> [![CI][ci-img]][ci-url] [![License][license-img]][license-url]
 
-This repository contains the `.proto` files defining the gRPC API for [Nebius AI Cloud](https://nebius.com) services.
-These files describe the structure of requests and responses exchanged between your client application and Nebius services using Protocol Buffers.
+This repository contains the `.proto` files defining the gRPC API for [Nebius AI Cloud](https://nebius.com) services. It also provides a pre-generated Rust crate for interacting with this API.
+
+## Rust Crate Usage
+
+This crate provides native Rust types and [tonic](https://github.com/hyperium/tonic) clients for all Nebius AI Cloud services.
+
+### Setup
+
+Add the crate to your `Cargo.toml` dependencies. You will also need `tokio` and `tonic`.
+
+```toml
+[dependencies]
+nebius-api = "0.1" # Replace with the latest version from crates.io
+tokio = { version = "1", features = ["full"] }
+tonic = { version = "0.13", features = ["transport"] }
+```
+
+### Example: Creating a Virtual Machine
+
+The following example demonstrates how to create a simple virtual machine.
+
+First, ensure you have an IAM token for authentication. You can get one using the Nebius CLI: `nebius iam get-access-token`. It is recommended to set this token as an environment variable. You will also need to provide IDs for your project, a subnet, and the boot image.
+
+```rust
+use nebius_api::{
+    common::v1::ResourceMetadata,
+    compute::v1::{
+        instance_service_client::InstanceServiceClient, attached_disk_spec, resources_spec, AttachedDiskSpec,
+        CreateInstanceRequest, ExistingDisk, InstanceSpec, NetworkInterfaceSpec, ResourcesSpec,
+    },
+};
+use tonic::{transport::Channel, Request};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Get environment variables.
+    let project_id = std::env::var("NEBIUS_PROJECT_ID").expect("NEBIUS_PROJECT_ID must be set");
+    let subnet_id = std::env::var("NEBIUS_SUBNET_ID").expect("NEBIUS_SUBNET_ID must be set");
+    let image_id = std::env::var("NEBIUS_IMAGE_ID").unwrap_or("image-ubuntu-2204-lts".to_string());
+    let token = std::env::var("NEBIUS_TOKEN").expect("NEBIUS_TOKEN must be set");
+
+    // 2. Create a channel to the API endpoint.
+    let channel = Channel::from_static("https://compute.api.nebius.cloud")
+        .connect()
+        .await?;
+
+    // 3. Create a client with an interceptor to add the authorization token.
+    let mut client = InstanceServiceClient::with_interceptor(channel, move |mut req: Request<()>| {
+        let auth_header = format!("Bearer {}", token).parse().unwrap();
+        req.metadata_mut().insert("authorization", auth_header);
+        Ok(req)
+    });
+
+    // 4. Prepare the request to create a VM.
+    let request = tonic::Request::new(CreateInstanceRequest {
+        metadata: Some(ResourceMetadata {
+            parent_id: project_id,
+            name: "demo-vm".into(),
+            ..Default::default()
+        }),
+        spec: Some(InstanceSpec {
+            resources: Some(ResourcesSpec {
+                platform: "standard-v1".into(),
+                size: Some(resources_spec::Size::Preset("standard-1-4".into())),
+            }),
+            network_interfaces: vec![NetworkInterfaceSpec {
+                subnet_id,
+                ..Default::default()
+            }],
+            boot_disk: Some(AttachedDiskSpec {
+                attach_mode: 2, // READ_WRITE
+                device_id: "boot".into(),
+                r#type: Some(attached_disk_spec::Type::ExistingDisk(ExistingDisk {
+                    id: image_id,
+                })),
+            }),
+            ..Default::default()
+        }),
+    });
+
+    // 5. Call the API. This returns an Operation.
+    let response = client.create(request).await?;
+    let operation = response.into_inner();
+
+    println!("VM creation operation started: {}", operation.id);
+    println!("You can poll the operation status using the OperationService.");
+
+    Ok(())
+}
+
+### Development
+
+If you are working on this crate directly, you will need the `buf` CLI to be installed. The Rust code is generated automatically from the `.proto` files when you run `cargo build`.
+
+---
+
+## API Documentation
+
+The following sections describe the Nebius gRPC API in detail, including authentication, endpoints, and usage patterns.
 
 ## Tools
 
@@ -327,95 +424,6 @@ grpcurl -H "Authorization: Bearer $TOKEN" \
   -d '{"metadata": {"id": "compute-instance-id"}, "spec": {"cpu": 4}}' \
   compute.api.nebius.cloud:443 \
   nebius.compute.v1.InstanceService/Update
-```
-
-## Quick-start: Creating a VM from Rust
-
-The generated Rust crate in this repository already contains the full gRPC **Compute API** client.  
-All you need are the normal `tonic` runtime dependencies plus an IAM token for authentication.
-
-Add the crate (and runtime) to your project:
-
-```toml
-[dependencies]
-# Once published on crates.io you can replace the `path` with the version.
-nebius          = { path = "." }
-tokio           = { version = "1", features = ["rt-multi-thread", "macros"] }
-# Optional convenience crates
-anyhow          = "1"
-```
-
-Below is a *minimal* example that creates a 1 vCPU / 4 GiB VM called **`demo-vm`**.  
-Adjust the values (project, subnet, image, preset, …) to match your environment.
-
-```rust
-use nebius::compute::v1::{
-    instance_service_client::InstanceServiceClient,
-    CreateInstanceRequest, InstanceSpec, ResourcesSpec, NetworkInterfaceSpec,
-    attached_disk_spec::Type as DiskType, AttachedDiskSpec,
-    resources_spec,
-};
-use nebius::common::v1::ResourceMetadata;
-use tonic::{transport::Channel, metadata::MetadataValue, Request};
-
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    // 1. Acquire an IAM token (see README section above)
-    let token = std::env::var("NEBIUS_TOKEN")?;
-
-    // 2. Build a gRPC channel to the Compute endpoint
-    let channel = Channel::from_static("https://compute.api.nebius.cloud")
-        .connect()
-        .await?;
-
-    // 3. Add an interceptor that injects the Authorization header
-    let mut client = InstanceServiceClient::with_interceptor(channel, move |mut req: Request<()>| {
-        let meta = MetadataValue::try_from(format!("Bearer {token}"))
-            .expect("valid metadata value");
-        req.metadata_mut().insert("authorization", meta);
-        Ok(req)
-    });
-
-    // 4. Prepare the CreateInstanceRequest
-    let request = CreateInstanceRequest {
-        metadata: Some(ResourceMetadata {
-            // parent_id = project-ID or folder-ID
-            parent_id: "project-eu1abcdefghij".into(),
-            name: "demo-vm".into(),
-            // other ResourceMetadata fields can stay default
-            ..Default::default()
-        }),
-        spec: Some(InstanceSpec {
-            // Platform & preset (= 1 vCPU / 4 GiB)
-            resources: Some(ResourcesSpec {
-                platform: "standard-v1".into(),
-                size: Some(resources_spec::Size::Preset("standard-1-4".into())),
-            }),
-            // Minimal networking: attach to an existing subnet
-            network_interfaces: vec![NetworkInterfaceSpec {
-                subnet_id: "subnet-eu1abcdefghij".into(),
-                ..Default::default()
-            }],
-            // Boot from an existing image
-            boot_disk: Some(AttachedDiskSpec {
-                attach_mode: 2,            // READ_WRITE
-                device_id: "boot".into(),
-                r#type: Some(DiskType::ExistingDisk(nebius::compute::v1::ExistingDisk {
-                    // Public Ubuntu image – use `ImageService/List` to discover more
-                    id: "image-ubuntu-2204-lts".into(),
-                })),
-            }),
-            ..Default::default()
-        }),
-    };
-
-    // 5. Call the API
-    let operation = client.create(request).await?.into_inner();
-    println!("Operation started: {}", operation.id);
-
-    // Poll the operation until it finishes (omitted for brevity).
-    Ok(())
-}
 ```
 
 A real-world program would:
