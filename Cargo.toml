@@ -2,6 +2,8 @@
 name = "nebius"
 version = "0.1.0"
 edition = "2024"
+description = "A client for the Nebius API"
+license = "MIT"
 
 [dependencies]
 pbjson = "0.7.0"
