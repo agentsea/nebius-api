@@ -1,0 +1,13 @@
+[package]
+name = "nebius"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pbjson = "0.7.0"
+pbjson-types = "0.7.0"
+prost = "0.13.5"
+prost-types = "0.13.5"
+serde = "1.0.219"
+tokio = "1.45.1"
+tonic = "0.13.1"

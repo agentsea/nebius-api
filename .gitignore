@@ -19,3 +19,8 @@ $RECYCLE.BIN/
 # vscode
 .vscode/
 .history/
+
+
+# Added by cargo
+
+/target

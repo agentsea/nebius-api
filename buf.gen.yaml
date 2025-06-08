@@ -18,3 +18,18 @@ plugins:
     out: gen/python
   - remote: buf.build/protocolbuffers/python
     out: gen/python
+
+  - remote: buf.build/community/neoeinstein-prost
+    out: gen/rust
+    opt:
+      - compile_well_known_types
+      - extern_path=.google.protobuf=::pbjson_types
+
+  - remote: buf.build/community/neoeinstein-prost-serde
+    out: gen/rust
+
+  - remote: buf.build/community/neoeinstein-tonic
+    out: gen/rust
+    opt:
+      - compile_well_known_types
+      - extern_path=.google.protobuf=::pbjson_types

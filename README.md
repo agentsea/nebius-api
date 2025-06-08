@@ -89,7 +89,7 @@ Steps:
         - `iss`: Your service account ID.
         - `sub`: Your service account ID.
         - `exp`: Set a short expiration time (e.g., 5 minutes) as the token is only used for exchanging another token.
-    - Sign the JWT with the service account’s private key.
+    - Sign the JWT with the service account's private key.
 1. Exchange JWT for an IAM Token:
     - Using gRPC: Call `nebius.iam.v1.TokenExchangeService/Exchange` on `tokens.iam.api.nebius.cloud:443`.
     - Using HTTP: Send a POST request to `https://auth.eu.nebius.com:443/oauth2/token/exchange`.
@@ -328,6 +328,102 @@ grpcurl -H "Authorization: Bearer $TOKEN" \
   compute.api.nebius.cloud:443 \
   nebius.compute.v1.InstanceService/Update
 ```
+
+## Quick-start: Creating a VM from Rust
+
+The generated Rust crate in this repository already contains the full gRPC **Compute API** client.  
+All you need are the normal `tonic` runtime dependencies plus an IAM token for authentication.
+
+Add the crate (and runtime) to your project:
+
+```toml
+[dependencies]
+# Once published on crates.io you can replace the `path` with the version.
+nebius          = { path = "." }
+tokio           = { version = "1", features = ["rt-multi-thread", "macros"] }
+# Optional convenience crates
+anyhow          = "1"
+```
+
+Below is a *minimal* example that creates a 1 vCPU / 4 GiB VM called **`demo-vm`**.  
+Adjust the values (project, subnet, image, preset, …) to match your environment.
+
+```rust
+use nebius::compute::v1::{
+    instance_service_client::InstanceServiceClient,
+    CreateInstanceRequest, InstanceSpec, ResourcesSpec, NetworkInterfaceSpec,
+    attached_disk_spec::Type as DiskType, AttachedDiskSpec,
+    resources_spec,
+};
+use nebius::common::v1::ResourceMetadata;
+use tonic::{transport::Channel, metadata::MetadataValue, Request};
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    // 1. Acquire an IAM token (see README section above)
+    let token = std::env::var("NEBIUS_TOKEN")?;
+
+    // 2. Build a gRPC channel to the Compute endpoint
+    let channel = Channel::from_static("https://compute.api.nebius.cloud")
+        .connect()
+        .await?;
+
+    // 3. Add an interceptor that injects the Authorization header
+    let mut client = InstanceServiceClient::with_interceptor(channel, move |mut req: Request<()>| {
+        let meta = MetadataValue::try_from(format!("Bearer {token}"))
+            .expect("valid metadata value");
+        req.metadata_mut().insert("authorization", meta);
+        Ok(req)
+    });
+
+    // 4. Prepare the CreateInstanceRequest
+    let request = CreateInstanceRequest {
+        metadata: Some(ResourceMetadata {
+            // parent_id = project-ID or folder-ID
+            parent_id: "project-eu1abcdefghij".into(),
+            name: "demo-vm".into(),
+            // other ResourceMetadata fields can stay default
+            ..Default::default()
+        }),
+        spec: Some(InstanceSpec {
+            // Platform & preset (= 1 vCPU / 4 GiB)
+            resources: Some(ResourcesSpec {
+                platform: "standard-v1".into(),
+                size: Some(resources_spec::Size::Preset("standard-1-4".into())),
+            }),
+            // Minimal networking: attach to an existing subnet
+            network_interfaces: vec![NetworkInterfaceSpec {
+                subnet_id: "subnet-eu1abcdefghij".into(),
+                ..Default::default()
+            }],
+            // Boot from an existing image
+            boot_disk: Some(AttachedDiskSpec {
+                attach_mode: 2,            // READ_WRITE
+                device_id: "boot".into(),
+                r#type: Some(DiskType::ExistingDisk(nebius::compute::v1::ExistingDisk {
+                    // Public Ubuntu image – use `ImageService/List` to discover more
+                    id: "image-ubuntu-2204-lts".into(),
+                })),
+            }),
+            ..Default::default()
+        }),
+    };
+
+    // 5. Call the API
+    let operation = client.create(request).await?.into_inner();
+    println!("Operation started: {}", operation.id);
+
+    // Poll the operation until it finishes (omitted for brevity).
+    Ok(())
+}
+```
+
+A real-world program would:
+1. Poll `nebius.common.v1.OperationService/Get` until the operation `status` is set.  
+2. Handle retries & errors based on `ServiceError.retry_type`.
+
+**Tip:** The `nebius` crate exposes *all* services, so you can script the whole workflow –
+creating disks, subnets, firewalls, and so on – entirely in Rust.
 
 ## License
 
